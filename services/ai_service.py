@@ -2,15 +2,11 @@ import asyncio
 import json
 import re
 from typing import Optional
-from openai import AsyncOpenAI
+import aiohttp
 from config import DEEPSEEK_KEY
 
-ds_client = None
-if DEEPSEEK_KEY:
-    try:
-        ds_client = AsyncOpenAI(api_key=DEEPSEEK_KEY, base_url="https://api.deepseek.com")
-    except Exception as e:
-        print(f"❌ DeepSeek client init failed: {e}")
+DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
+DEEPSEEK_MODEL = "deepseek-chat"
 
 AI_SEMAPHORE = None
 
@@ -156,17 +152,32 @@ def _clean_text_brutal(text, lang_code=None):
 
 async def _ask_ai(prompt: str):
     """Call DeepSeek. Returns text or None on failure."""
-    if not ds_client:
-        print("❌ DeepSeek client not initialized — check DEEPSEEK_KEY in .env")
+    if not DEEPSEEK_KEY:
+        print("❌ DeepSeek unavailable — DEEPSEEK_KEY is missing in .env")
         return None
+
+    payload = {
+        "model": DEEPSEEK_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False,
+    }
+
     try:
         async with _get_semaphore():
-            response = await ds_client.chat.completions.create(
-                model="deepseek-chat",
-                messages=[{"role": "user", "content": prompt}],
-                stream=False,
-            )
-        return response.choices[0].message.content
+            timeout = aiohttp.ClientTimeout(total=90)
+            headers = {
+                "Authorization": f"Bearer {DEEPSEEK_KEY}",
+                "Content-Type": "application/json",
+            }
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(DEEPSEEK_API_URL, headers=headers, json=payload) as response:
+                    response_text = await response.text()
+                    if response.status >= 400:
+                        print(f"❌ DeepSeek HTTP {response.status}: {response_text[:500]}")
+                        return None
+
+        data = json.loads(response_text)
+        return data["choices"][0]["message"]["content"]
     except Exception as e:
         print(f"❌ DeepSeek error: {e}")
         return None
