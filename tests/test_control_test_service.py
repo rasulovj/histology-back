@@ -29,6 +29,22 @@ class ControlTestParserTests(unittest.TestCase):
         self.assertEqual(len(questions[0]["options"]), 4)
         self.assertEqual(questions[0]["correct_indices"], [1, 2, 3])
 
+    def test_parses_utf8_bom_prefixed_file(self):
+        content = """
+\ufeff# T limfotsitlar limfa tugunining qaysi zonasida joylashgan?
+- mag'iz tasmalari
++ parakortikal zona
+        """.strip()
+
+        questions = parse_control_test_text(content)
+        self.assertEqual(len(questions), 1)
+        self.assertEqual(
+            questions[0]["question"],
+            "T limfotsitlar limfa tugunining qaysi zonasida joylashgan?",
+        )
+        self.assertEqual(questions[0]["options"], ["mag'iz tasmalari", "parakortikal zona"])
+        self.assertEqual(questions[0]["correct_indices"], [1])
+
     def test_parses_open_question_with_hidden_answers(self):
         content = """
 # Rasmda ko'rsatilgan hujayrani yozing

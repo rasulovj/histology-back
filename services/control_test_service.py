@@ -17,6 +17,8 @@ def parse_control_test_text(content: str) -> list[dict[str, Any]]:
     if not isinstance(content, str) or not content.strip():
         raise ControlTestParseError("File is empty")
 
+    content = content.lstrip("\ufeff")
+
     questions: list[dict[str, Any]] = []
     current_question: dict[str, Any] | None = None
 
