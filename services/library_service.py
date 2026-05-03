@@ -11,6 +11,10 @@ KB_DIR = DB_PATH
 INDEX_FILE = os.path.join(KB_DIR, "library_index.json")
 KNOWLEDGE_MAP_FILE = os.path.join(KB_DIR, "knowledge_map.json")
 CACHE_DIR = os.path.join(KB_DIR, "text_cache") 
+MAX_CHUNKS = 3000
+MAX_TOTAL_TEXT_CHARS = 20_000_000
+LARGE_FILE_SKIP_KMAP_BYTES = 120 * 1024 * 1024
+MAX_WORDS_PER_CHUNK = 800
 
 def load_json(filepath):
     if os.path.exists(filepath):
@@ -28,13 +32,18 @@ def save_json(filepath, data):
 def extract_text_in_chunks(file_path):
     ext = file_path.lower().split('.')[-1]
     chunks = []
+    total_chars = 0
     
     try:
         if ext == 'pdf':
             reader = PdfReader(file_path)
             for p in reader.pages:
                 text = p.extract_text()
-                chunks.append(text if text else "")
+                normalized = text if text else ""
+                chunks.append(normalized)
+                total_chars += len(normalized)
+                if len(chunks) >= MAX_CHUNKS or total_chars >= MAX_TOTAL_TEXT_CHARS:
+                    break
                 
         elif ext == 'pptx':
             prs = Presentation(file_path)
@@ -43,13 +52,34 @@ def extract_text_in_chunks(file_path):
                 for shape in slide.shapes:
                     if hasattr(shape, "text"):
                         slide_text.append(shape.text)
-                chunks.append("\n".join(slide_text))
+                normalized = "\n".join(slide_text)
+                chunks.append(normalized)
+                total_chars += len(normalized)
+                if len(chunks) >= MAX_CHUNKS or total_chars >= MAX_TOTAL_TEXT_CHARS:
+                    break
                 
         elif ext == 'docx':
             doc = docx.Document(file_path)
-            full_text = "\n".join([p.text for p in doc.paragraphs])
             chunk_size = 2000
-            chunks = [full_text[i:i+chunk_size] for i in range(0, len(full_text), chunk_size)]
+            buffer = []
+            buffer_len = 0
+            for para in doc.paragraphs:
+                para_text = para.text or ""
+                if not para_text:
+                    continue
+                buffer.append(para_text)
+                buffer_len += len(para_text) + 1
+                if buffer_len >= chunk_size:
+                    normalized = "\n".join(buffer)
+                    chunks.append(normalized)
+                    total_chars += len(normalized)
+                    buffer = []
+                    buffer_len = 0
+                    if len(chunks) >= MAX_CHUNKS or total_chars >= MAX_TOTAL_TEXT_CHARS:
+                        break
+            if buffer and len(chunks) < MAX_CHUNKS and total_chars < MAX_TOTAL_TEXT_CHARS:
+                normalized = "\n".join(buffer)
+                chunks.append(normalized)
             
     except Exception as e:
         print(f"Ошибка чтения файла {file_path}: {e}")
@@ -70,6 +100,18 @@ async def index_document(file_path, doc_id, file_name):
     
     # Здесь вызывается твой Gemini API для классификации!
     category = await classify_book_topic(sample_text)
+
+    file_size = 0
+    try:
+        file_size = os.path.getsize(file_path)
+    except Exception:
+        file_size = 0
+
+    if file_size >= LARGE_FILE_SKIP_KMAP_BYTES:
+        print(f"⚠️ Пропускаю heavy keyword-index для большого файла: {file_name} ({file_size} bytes)")
+        del chunks
+        gc.collect()
+        return category
     
     k_map = await asyncio.to_thread(load_json, KNOWLEDGE_MAP_FILE)
     
@@ -80,7 +122,9 @@ async def index_document(file_path, doc_id, file_name):
             continue
             
         # Увеличили лимит до 5 букв, чтобы отсеять мусор и спасти RAM
-        words = set(w.lower() for w in text.split() if len(w) > 5)
+        words = set(w.lower() for w in text.split() if 5 < len(w) < 40)
+        if len(words) > MAX_WORDS_PER_CHUNK:
+            words = set(list(words)[:MAX_WORDS_PER_CHUNK])
         
         for w in words:
             if w not in k_map:
