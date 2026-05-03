@@ -21,6 +21,7 @@ ALLOWED_MIME_TYPES = {
     "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 }
 MAX_SIZE_BYTES = 500 * 1024 * 1024  # 500 MB
+CHUNK_SIZE_BYTES = 1024 * 1024  # 1 MB
 
 
 def _load_json(path: str) -> dict:
@@ -36,6 +37,25 @@ def _load_json(path: str) -> dict:
 def _save_json(path: str, data) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
+
+
+async def _write_upload_stream(file: UploadFile, dest_path: str, max_size_bytes: int) -> int:
+    total_bytes = 0
+    try:
+        with open(dest_path, "wb") as out:
+            while True:
+                chunk = await file.read(CHUNK_SIZE_BYTES)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > max_size_bytes:
+                    raise HTTPException(status_code=413, detail="File too large (max 500MB)")
+                out.write(chunk)
+        return total_bytes
+    except HTTPException:
+        if os.path.exists(dest_path):
+            os.remove(dest_path)
+        raise
 
 
 @router.get("")
@@ -71,11 +91,6 @@ async def upload_document(
     if file.content_type and file.content_type not in ALLOWED_MIME_TYPES:
         raise HTTPException(status_code=400, detail="Invalid MIME type")
 
-    # Read and size-check
-    content = await file.read()
-    if len(content) > MAX_SIZE_BYTES:
-        raise HTTPException(status_code=413, detail="File too large (max 500MB)")
-
     # Resolve filename collision
     base_name = os.path.splitext(file.filename or "upload")[0]
     dest_filename = f"{base_name}{ext}"
@@ -85,8 +100,7 @@ async def upload_document(
         dest_path = os.path.join(RAW_FILES_PATH, dest_filename)
 
     os.makedirs(RAW_FILES_PATH, exist_ok=True)
-    with open(dest_path, "wb") as f:
-        f.write(content)
+    await _write_upload_stream(file, dest_path, MAX_SIZE_BYTES)
 
     # Index the document
     try:

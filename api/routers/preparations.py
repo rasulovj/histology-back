@@ -20,6 +20,7 @@ ALLOWED_MIME_TYPES = {
     "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 }
 MAX_SIZE_BYTES = 500 * 1024 * 1024  # 500 MB
+CHUNK_SIZE_BYTES = 1024 * 1024  # 1 MB
 
 
 def _load_json(path: str) -> dict:
@@ -35,6 +36,25 @@ def _load_json(path: str) -> dict:
 def _save_json(path: str, data: Any) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+async def _write_upload_stream(file: UploadFile, dest_path: str, max_size_bytes: int) -> int:
+    total_bytes = 0
+    try:
+        with open(dest_path, "wb") as out:
+            while True:
+                chunk = await file.read(CHUNK_SIZE_BYTES)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > max_size_bytes:
+                    raise HTTPException(status_code=413, detail="File too large (max 500MB)")
+                out.write(chunk)
+        return total_bytes
+    except HTTPException:
+        if os.path.exists(dest_path):
+            os.remove(dest_path)
+        raise
 
 
 def _default_category(value: Optional[str]) -> str:
@@ -237,10 +257,6 @@ async def upload_preparation(
     if file.content_type and file.content_type not in ALLOWED_MIME_TYPES:
         raise HTTPException(status_code=400, detail="Invalid MIME type")
 
-    content = await file.read()
-    if len(content) > MAX_SIZE_BYTES:
-        raise HTTPException(status_code=413, detail="File too large (max 500MB)")
-
     os.makedirs(PREPARATIONS_DIR, exist_ok=True)
 
     base_name = os.path.splitext(file.filename or "preparation")[0]
@@ -250,8 +266,7 @@ async def upload_preparation(
         dest_filename = f"{base_name}_{int(time.time())}{ext}"
         dest_path = os.path.join(PREPARATIONS_DIR, dest_filename)
 
-    with open(dest_path, "wb") as f:
-        f.write(content)
+    await _write_upload_stream(file, dest_path, MAX_SIZE_BYTES)
 
     index = _load_json(INDEX_FILE)
     prep_id = f"prep_{uuid.uuid4().hex[:8]}"
