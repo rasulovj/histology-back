@@ -20,6 +20,7 @@ from handlers.user_handlers import (
     shuffle_question_options,
 )
 from services.quiz_service import filter_questions_by_answer_rule
+from services.usecases.quiz_uc import QuizUseCase
 
 
 class CheckLimitTests(unittest.IsolatedAsyncioTestCase):
@@ -175,7 +176,7 @@ class QuizOptionShuffleTests(unittest.TestCase):
 
 
 class QuizAnswerRuleTests(unittest.TestCase):
-    def test_filter_questions_keeps_only_one_or_two_correct_answers(self):
+    def test_filter_questions_keeps_multiple_correct_answers(self):
         questions = [
             {"question": "Q1", "options": ["A", "B", "C"], "correct_indices": [0]},
             {"question": "Q2", "options": ["A", "B", "C"], "correct_indices": [0, 1]},
@@ -184,9 +185,25 @@ class QuizAnswerRuleTests(unittest.TestCase):
 
         filtered = filter_questions_by_answer_rule(questions)
 
-        self.assertEqual(len(filtered), 2)
+        self.assertEqual(len(filtered), 3)
         self.assertEqual(filtered[0]["correct_indices"], [0])
         self.assertEqual(filtered[1]["correct_indices"], [0, 1])
+        self.assertEqual(filtered[2]["correct_indices"], [0, 1, 2])
+
+    def test_quiz_use_case_normalization_keeps_three_correct_answers(self):
+        use_case = QuizUseCase(user_id=1, course="1", lang="en")
+        questions = [
+            {
+                "question": "Q",
+                "options": ["A", "B", "C", "D"],
+                "correct_indices": [0, 1, 2],
+                "explanation": "Because",
+            },
+        ]
+
+        normalized = use_case._normalize_questions(questions)
+
+        self.assertEqual(normalized[0]["correct_indices"], [0, 1, 2])
 
 
 class QuizUiRuleTests(unittest.TestCase):
@@ -232,8 +249,8 @@ class QuizUiRuleTests(unittest.TestCase):
         self.assertEqual(len(keyboard.inline_keyboard), 1)
 
     def test_multi_answer_question_keeps_submit_button(self):
-        question = {"options": ["A", "B", "C", "D"], "correct_indices": [1, 2]}
-        keyboard = build_answer_keyboard(question, {1}, "en")
+        question = {"options": ["A", "B", "C", "D"], "correct_indices": [1, 2, 3]}
+        keyboard = build_answer_keyboard(question, {1, 2}, "en")
         self.assertTrue(is_multi_answer_question(question))
         self.assertEqual(len(keyboard.inline_keyboard), 2)
 

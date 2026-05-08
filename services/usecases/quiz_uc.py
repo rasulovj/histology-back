@@ -28,7 +28,7 @@ class QuizUseCase:
         return self._normalize_questions(questions)
 
     def _has_multi_correct(self, questions):
-        return any(len(q.get("correct_indices", [])) == 2 for q in questions)
+        return any(len(q.get("correct_indices", [])) > 1 for q in questions)
 
     def _normalize_questions(self, questions):
         if not questions or not isinstance(questions, list):
@@ -54,7 +54,7 @@ class QuizUseCase:
             if not isinstance(raw_indices, list):
                 raw_indices = [raw_indices]
             correct_indices = normalize_correct_indices(raw_indices, len(options))
-            if len(correct_indices) not in (1, 2):
+            if len(correct_indices) < 1:
                 continue
 
             normalized.append({

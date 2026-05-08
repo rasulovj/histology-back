@@ -208,7 +208,10 @@ def prepare_control_test_questions(questions: list[dict]) -> list[dict]:
     return prepared_questions
 
 def is_multi_answer_question(question: dict) -> bool:
-    return len(question.get("correct_indices", [])) == 2
+    return len(question.get("correct_indices", [])) > 1
+
+def get_multi_answer_count(question: dict) -> int:
+    return len(question.get("correct_indices", []))
 
 def build_answer_keyboard(question: dict, selected_indices: set[int], lang: str) -> InlineKeyboardMarkup:
     def option_letter(i: int) -> str:
@@ -1644,7 +1647,7 @@ async def send_question(message: Message, state: FSMContext):
     )
     txt = f"❓ {idx+1}/{len(q_list)}\n\n{q['question']}\n\n{opts_text}"
     if is_multi_answer_question(q):
-        txt += f"\n\n{t('multi_ans_hint', lang)}"
+        txt += f"\n\n{t('multi_ans_hint', lang).format(n=get_multi_answer_count(q))}"
 
     await state.set_state(TmaState.in_quiz)
 
@@ -1707,7 +1710,7 @@ async def check_answer(callback: CallbackQuery, state: FSMContext):
         return
 
     selected_indices = set(data.get("selected_indices", []))
-    max_allowed = 2 if is_multi_answer_question(q) else 1
+    max_allowed = get_multi_answer_count(q) if is_multi_answer_question(q) else 1
     if idx in selected_indices:
         selected_indices.remove(idx)
     else:

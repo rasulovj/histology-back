@@ -139,7 +139,7 @@ def normalize_question_answer_rule(question):
 
     if len(correct_indices) == 0:
         return None
-    if len(correct_indices) > 2:
+    if len(correct_indices) > len(options):
         return None
 
     question["correct_indices"] = correct_indices
