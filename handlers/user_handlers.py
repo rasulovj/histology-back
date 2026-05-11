@@ -207,6 +207,51 @@ def prepare_control_test_questions(questions: list[dict]) -> list[dict]:
         prepared_questions.append(question)
     return prepared_questions
 
+
+def _pick_random_questions(questions: list[dict], count: int) -> list[dict]:
+    if count <= 0 or not questions:
+        return []
+    if len(questions) <= count:
+        return list(questions)
+    return random.sample(questions, k=count)
+
+
+def select_control_test_questions(
+    questions: list[dict],
+    multi_answer_count: int = 5,
+    single_answer_count: int = 3,
+    open_question_count: int = 2,
+) -> list[dict]:
+    if not questions:
+        return []
+
+    multi_answer_questions: list[dict] = []
+    single_answer_questions: list[dict] = []
+    open_questions: list[dict] = []
+
+    for question in questions:
+        if question.get("question_type") == "open":
+            open_questions.append(question)
+            continue
+        if len(question.get("correct_indices", [])) > 1:
+            multi_answer_questions.append(question)
+            continue
+        single_answer_questions.append(question)
+
+    selected: list[dict] = []
+    selected.extend(_pick_random_questions(multi_answer_questions, multi_answer_count))
+    selected.extend(_pick_random_questions(single_answer_questions, single_answer_count))
+    selected.extend(_pick_random_questions(open_questions, open_question_count))
+
+    target_total = multi_answer_count + single_answer_count + open_question_count
+    if len(selected) < target_total:
+        selected_ids = {id(item) for item in selected}
+        remaining_pool = [question for question in questions if id(question) not in selected_ids]
+        selected.extend(_pick_random_questions(remaining_pool, target_total - len(selected)))
+
+    random.shuffle(selected)
+    return selected
+
 def is_multi_answer_question(question: dict) -> bool:
     return len(question.get("correct_indices", [])) > 1
 
@@ -1328,7 +1373,9 @@ async def control_test_pick(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
-    questions = prepare_control_test_questions(payload.get("questions", []))
+    questions = prepare_control_test_questions(
+        select_control_test_questions(payload.get("questions", []))
+    )
     if not questions:
         await callback.message.answer(t("control_test_unavailable_pick", lang))
         await callback.answer()

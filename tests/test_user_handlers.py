@@ -15,6 +15,7 @@ from handlers.user_handlers import (
     is_open_question,
     is_multi_answer_question,
     prepare_control_test_questions,
+    select_control_test_questions,
     send_open_question,
     should_send_quiz_export,
     shuffle_question_options,
@@ -241,6 +242,47 @@ class QuizUiRuleTests(unittest.TestCase):
         self.assertEqual(prepared[0]["correct_indices"], [2])
         self.assertEqual(prepared[1]["accepted_answers"], ["fibroblast"])
         self.assertEqual(prepared[1]["options"], [])
+
+    def test_control_test_selection_uses_5_3_2_mix_when_available(self):
+        multi = [
+            {"question": f"M{i}", "question_type": "choice", "options": ["A", "B", "C"], "correct_indices": [0, 1]}
+            for i in range(6)
+        ]
+        single = [
+            {"question": f"S{i}", "question_type": "choice", "options": ["A", "B", "C"], "correct_indices": [1]}
+            for i in range(5)
+        ]
+        open_q = [
+            {"question": f"O{i}", "question_type": "open", "accepted_answers": ["x"], "options": [], "correct_indices": []}
+            for i in range(4)
+        ]
+
+        selected = select_control_test_questions(multi + single + open_q)
+
+        self.assertEqual(len(selected), 10)
+        self.assertEqual(sum(1 for q in selected if q.get("question_type") == "open"), 2)
+        self.assertEqual(sum(1 for q in selected if q.get("question_type") != "open" and len(q.get("correct_indices", [])) > 1), 5)
+        self.assertEqual(sum(1 for q in selected if q.get("question_type") != "open" and len(q.get("correct_indices", [])) == 1), 3)
+
+    def test_control_test_selection_backfills_when_type_is_short(self):
+        multi = [
+            {"question": f"M{i}", "question_type": "choice", "options": ["A", "B", "C"], "correct_indices": [0, 1]}
+            for i in range(8)
+        ]
+        single = [
+            {"question": f"S{i}", "question_type": "choice", "options": ["A", "B", "C"], "correct_indices": [1]}
+            for i in range(3)
+        ]
+        open_q = [
+            {"question": f"O{i}", "question_type": "open", "accepted_answers": ["x"], "options": [], "correct_indices": []}
+            for i in range(1)
+        ]
+
+        selected = select_control_test_questions(multi + single + open_q)
+
+        self.assertEqual(len(selected), 10)
+        self.assertEqual(sum(1 for q in selected if q.get("question_type") == "open"), 1)
+        self.assertGreaterEqual(sum(1 for q in selected if q.get("question_type") != "open" and len(q.get("correct_indices", [])) > 1), 5)
 
     def test_single_answer_question_has_no_submit_button(self):
         question = {"options": ["A", "B", "C"], "correct_indices": [1]}

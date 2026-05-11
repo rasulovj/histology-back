@@ -418,12 +418,36 @@ async def get_last_topic(user_id):
 # --- МОНЕТИЗАЦИЯ ---
 
 FREE_DAILY_LIMIT = 3
+PREMIUM_DURATION_DAYS = 30
 
 def _is_premium_active(value) -> bool:
     try:
         return int(value) > 0
     except (TypeError, ValueError):
         return str(value).strip().lower() in {"true", "yes", "premium", "active"}
+
+def _parse_payment_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+
+    raw = str(value).strip()
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            pass
+
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+def _is_paid_premium_active(paid_at: Optional[str], now: Optional[datetime] = None) -> bool:
+    paid_dt = _parse_payment_datetime(paid_at)
+    if paid_dt is None:
+        return False
+    current = now or datetime.now()
+    return paid_dt + timedelta(days=PREMIUM_DURATION_DAYS) > current
 
 async def set_user_premium(user_id, level=1):
     today = datetime.now().strftime('%Y-%m-%d')
@@ -469,19 +493,20 @@ async def _is_user_premium_in_db(db_path: str, user_id) -> bool:
     try:
         async with aiosqlite.connect(db_path) as db:
             try:
-                async with db.execute("SELECT is_premium FROM users WHERE user_id = ?", (uid,)) as cursor:
+                async with db.execute(
+                    "SELECT paid_at FROM payment_history WHERE user_id = ? ORDER BY paid_at DESC LIMIT 1",
+                    (uid,)
+                ) as cursor:
                     row = await cursor.fetchone()
-                    if row and _is_premium_active(row[0]):
-                        return True
+                    if row:
+                        return _is_paid_premium_active(row[0])
             except aiosqlite.OperationalError:
                 pass
 
             try:
-                async with db.execute(
-                    "SELECT COUNT(1) FROM payment_history WHERE user_id = ?",
-                    (uid,)
-                ) as cursor:
-                    return ((await cursor.fetchone())[0] or 0) > 0
+                async with db.execute("SELECT is_premium FROM users WHERE user_id = ?", (uid,)) as cursor:
+                    row = await cursor.fetchone()
+                    return bool(row and _is_premium_active(row[0]))
             except aiosqlite.OperationalError:
                 return False
     except Exception:
@@ -494,16 +519,16 @@ async def get_user_premium_status(user_id):
         async with db.execute("SELECT is_premium FROM users WHERE user_id = ?", (uid,)) as cursor:
             row = await cursor.fetchone()
         stored_value = row[0] if row else 0
-        if _is_premium_active(stored_value):
-            return 1
 
         async with db.execute(
-            "SELECT COUNT(1) FROM payment_history WHERE user_id = ?",
+            "SELECT paid_at FROM payment_history WHERE user_id = ? ORDER BY paid_at DESC LIMIT 1",
             (uid,)
         ) as cursor:
-            has_paid_history = ((await cursor.fetchone())[0] or 0) > 0
+            latest_payment = await cursor.fetchone()
 
-        if has_paid_history:
+        if latest_payment:
+            is_active = _is_paid_premium_active(latest_payment[0])
+            next_premium_value = 1 if is_active else 0
             await db.execute(
                 """
                 INSERT OR IGNORE INTO users (
@@ -512,13 +537,16 @@ async def get_user_premium_status(user_id):
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (uid, "Guest", "1", "2024", "Unknown", "ru", 0, 1, today, today, "", 0, today)
+                (uid, "Guest", "1", "2024", "Unknown", "ru", 0, next_premium_value, today, today, "", 0, today)
             )
             await db.execute(
-                "UPDATE users SET is_premium = 1, daily_requests = 0 WHERE user_id = ?",
-                (uid,)
+                "UPDATE users SET is_premium = ?, daily_requests = CASE WHEN ? = 1 THEN 0 ELSE daily_requests END WHERE user_id = ?",
+                (next_premium_value, next_premium_value, uid)
             )
             await db.commit()
+            return next_premium_value
+
+        if _is_premium_active(stored_value):
             return 1
 
         for legacy_db in _legacy_db_candidates():
