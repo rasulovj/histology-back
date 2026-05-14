@@ -1589,12 +1589,12 @@ async def buy_narozat_handler(callback: CallbackQuery):
     lang = await get_user_lang(callback.from_user.id)
     await callback.answer()
 
-    tx = await create_payment(10000, "Narozat test access (30 days)")
+    tx = await create_payment(2000, "Narozat test access (30 days)")
     if not tx:
         return await callback.message.answer(t("payment_error", lang))
 
     tx_id = tx.get("tx_id") or tx.get("id")
-    amount = tx.get("amount", 10000)
+    amount = tx.get("amount", 2000)
     card = tx.get("card") or tx.get("card_number") or tx.get("requisite") or "—"
     await save_pending_payment(callback.from_user.id, tx_id, amount, payment_type="narozat")
 
