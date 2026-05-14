@@ -20,7 +20,7 @@ from services.usecases.quiz_uc import QuizUseCase
 from services.quiz_service import get_test_as_text, parse_test_txt_file, create_test_txt_file, clean_and_format_questions, enrich_questions_with_explanations, filter_questions_by_answer_rule
 from services.library_service import sync_library, get_library_catalog, KB_DIR
 from services.preparations_service import get_preparations_catalog
-from services.user_service import get_user_profile, save_user_profile, get_user_course, get_bot_statistics, get_admin_statistics, update_user_activity, get_user_lang, update_user_lang, is_user_registered, set_user_premium, get_user_premium_status, update_last_topic, get_last_topic, save_feedback, check_and_increment_requests, save_pending_payment, get_pending_payment, delete_pending_payment, record_payment, list_active_control_tests, get_control_test_by_id, has_active_narozat_access
+from services.user_service import get_user_profile, save_user_profile, get_user_course, get_bot_statistics, get_admin_statistics, update_user_activity, get_user_lang, update_user_lang, is_user_registered, set_user_premium, get_user_premium_status, update_last_topic, get_last_topic, save_feedback, check_and_increment_requests, save_pending_payment, get_pending_payment, delete_pending_payment, record_payment, list_active_control_tests, get_control_test_by_id, has_active_narozat_access, consume_narozat_free_try
 from services.sofpay_service import create_payment, check_payment
 from services.ktp_service import get_topics_for_faculty, get_topic_label
 from services.localization_service import t
@@ -1358,13 +1358,6 @@ async def control_test_start(message: Message, state: FSMContext):
         return
 
     lang = await get_user_lang(message.from_user.id)
-    if not await has_active_narozat_access(message.from_user.id):
-        await message.answer(
-            t("narozat_required", lang),
-            reply_markup=_narozat_kb(lang),
-        )
-        return
-
     tests = await list_active_control_tests()
     if not tests:
         await message.answer(t("control_test_not_available", lang), reply_markup=get_main_keyboard(lang, message.from_user.id))
@@ -1439,6 +1432,14 @@ async def control_test_count_pick(callback: CallbackQuery, state: FSMContext):
         await callback.message.answer(t("control_test_unavailable_pick", lang))
         return
 
+    allowed, remaining = await consume_narozat_free_try(callback.from_user.id)
+    if not allowed:
+        await callback.message.answer(
+            t("narozat_required", lang),
+            reply_markup=_narozat_kb(lang),
+        )
+        return
+
     selected = select_random_control_test_questions(raw_questions, desired_count)
     questions = prepare_control_test_questions(selected)
     if not questions:
@@ -1461,6 +1462,8 @@ async def control_test_count_pick(callback: CallbackQuery, state: FSMContext):
         t("control_test_starting", lang).format(title=title),
         reply_markup=get_cancel_keyboard(lang),
     )
+    if remaining >= 0:
+        await callback.message.answer(t("narozat_free_tries_left", lang).format(n=remaining))
     await send_next_question(callback.message, state)
 
 @router.message(TmaState.waiting_for_file_quiz, F.text)
@@ -2015,10 +2018,3 @@ async def smart_assistant_handler(message: Message, state: FSMContext):
              pass
              
     await message.answer(t("fb_request", lang), reply_markup=get_feedback_keyboard(lang))
-    if not await has_active_narozat_access(callback.from_user.id):
-        await callback.message.answer(
-            t("narozat_required", lang),
-            reply_markup=_narozat_kb(lang),
-        )
-        await callback.answer()
-        return
