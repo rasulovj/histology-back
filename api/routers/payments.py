@@ -19,9 +19,18 @@ async def _ensure_tables():
                 user_id TEXT,
                 tx_id TEXT UNIQUE,
                 amount INTEGER,
-                paid_at TEXT
+                paid_at TEXT,
+                payment_type TEXT DEFAULT 'premium'
             )
         """)
+        try:
+            await db.execute("ALTER TABLE payment_history ADD COLUMN payment_type TEXT DEFAULT 'premium'")
+        except aiosqlite.OperationalError:
+            pass
+        try:
+            await db.execute("ALTER TABLE pending_payments ADD COLUMN payment_type TEXT DEFAULT 'premium'")
+        except aiosqlite.OperationalError:
+            pass
         await db.commit()
 
 
@@ -37,6 +46,7 @@ async def _local_history(limit: int = 500) -> list:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             """SELECT ph.id, ph.user_id, ph.tx_id, ph.amount, ph.paid_at,
+                      COALESCE(ph.payment_type, 'premium') as payment_type,
                       u.fio, u.faculty, u.course
                FROM payment_history ph
                LEFT JOIN users u ON u.user_id = ph.user_id
@@ -49,7 +59,7 @@ async def _local_history(limit: int = 500) -> list:
         {
             "id": r[0], "user_id": r[1], "tx_id": r[2],
             "amount": r[3], "paid_at": r[4],
-            "fio": r[5], "faculty": r[6], "course": r[7],
+            "payment_type": r[5], "fio": r[6], "faculty": r[7], "course": r[8],
             "status": "paid",
         }
         for r in rows
@@ -60,6 +70,7 @@ async def _pending_with_users() -> list:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             """SELECT pp.user_id, pp.tx_id, pp.amount, pp.created_at,
+                      COALESCE(pp.payment_type, 'premium') as payment_type,
                       u.fio, u.faculty, u.course
                FROM pending_payments pp
                LEFT JOIN users u ON u.user_id = pp.user_id
@@ -69,7 +80,7 @@ async def _pending_with_users() -> list:
     return [
         {
             "user_id": r[0], "tx_id": r[1], "amount": r[2], "paid_at": r[3],
-            "fio": r[4], "faculty": r[5], "course": r[6],
+            "payment_type": r[4], "fio": r[5], "faculty": r[6], "course": r[7],
             "status": "pending",
         }
         for r in rows

@@ -20,7 +20,7 @@ from services.usecases.quiz_uc import QuizUseCase
 from services.quiz_service import get_test_as_text, parse_test_txt_file, create_test_txt_file, clean_and_format_questions, enrich_questions_with_explanations, filter_questions_by_answer_rule
 from services.library_service import sync_library, get_library_catalog, KB_DIR
 from services.preparations_service import get_preparations_catalog
-from services.user_service import get_user_profile, save_user_profile, get_user_course, get_bot_statistics, get_admin_statistics, update_user_activity, get_user_lang, update_user_lang, is_user_registered, set_user_premium, get_user_premium_status, update_last_topic, get_last_topic, save_feedback, check_and_increment_requests, save_pending_payment, get_pending_payment, delete_pending_payment, record_payment, list_active_control_tests, get_control_test_by_id
+from services.user_service import get_user_profile, save_user_profile, get_user_course, get_bot_statistics, get_admin_statistics, update_user_activity, get_user_lang, update_user_lang, is_user_registered, set_user_premium, get_user_premium_status, update_last_topic, get_last_topic, save_feedback, check_and_increment_requests, save_pending_payment, get_pending_payment, delete_pending_payment, record_payment, list_active_control_tests, get_control_test_by_id, has_active_narozat_access
 from services.sofpay_service import create_payment, check_payment
 from services.ktp_service import get_topics_for_faculty, get_topic_label
 from services.localization_service import t
@@ -497,6 +497,24 @@ def get_control_tests_keyboard(tests: list[dict], lang: str) -> InlineKeyboardMa
     rows.append([InlineKeyboardButton(text=t("back", lang), callback_data="ctest_back_main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
+def get_control_test_count_keyboard(lang: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="10", callback_data="ctest_count_10"),
+                InlineKeyboardButton(text="25", callback_data="ctest_count_25"),
+            ],
+            [InlineKeyboardButton(text=t("back", lang), callback_data="ctest_back_main")],
+        ]
+    )
+
+def select_random_control_test_questions(questions: list[dict], desired_count: int) -> list[dict]:
+    if not questions or desired_count <= 0:
+        return []
+    if len(questions) <= desired_count:
+        return list(questions)
+    return random.sample(questions, k=desired_count)
+
 class RegState(StatesGroup):
     lang = State()
     fio = State()
@@ -527,6 +545,11 @@ class EditProfileState(StatesGroup):
 def _premium_kb(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=t("buy_premium_btn", lang), callback_data="buy_premium")]
+    ])
+
+def _narozat_kb(lang: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=t("buy_narozat_btn", lang), callback_data="buy_narozat")]
     ])
 
 async def check_limit(message: Message, lang: str, user_id: Optional[Union[int, str]] = None) -> bool:
@@ -1335,6 +1358,13 @@ async def control_test_start(message: Message, state: FSMContext):
         return
 
     lang = await get_user_lang(message.from_user.id)
+    if not await has_active_narozat_access(message.from_user.id):
+        await message.answer(
+            t("narozat_required", lang),
+            reply_markup=_narozat_kb(lang),
+        )
+        return
+
     tests = await list_active_control_tests()
     if not tests:
         await message.answer(t("control_test_not_available", lang), reply_markup=get_main_keyboard(lang, message.from_user.id))
@@ -1373,12 +1403,46 @@ async def control_test_pick(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
-    questions = prepare_control_test_questions(
-        select_control_test_questions(payload.get("questions", []))
-    )
+    questions = payload.get("questions", [])
     if not questions:
         await callback.message.answer(t("control_test_unavailable_pick", lang))
         await callback.answer()
+        return
+
+    await state.clear()
+    await state.update_data(
+        control_test_raw_questions=questions,
+        control_test_title=payload.get("title", "control_test"),
+    )
+
+    await callback.message.answer(
+        t("control_test_choose_count", lang),
+        reply_markup=get_control_test_count_keyboard(lang),
+    )
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("ctest_count_"))
+async def control_test_count_pick(callback: CallbackQuery, state: FSMContext):
+    lang = await get_user_lang(callback.from_user.id)
+    await callback.answer()
+
+    state_data = await state.get_data()
+    raw_questions = state_data.get("control_test_raw_questions", [])
+    title = state_data.get("control_test_title", "control_test")
+    if not raw_questions:
+        await callback.message.answer(t("control_test_unavailable_pick", lang))
+        return
+
+    try:
+        desired_count = int(callback.data.replace("ctest_count_", ""))
+    except ValueError:
+        await callback.message.answer(t("control_test_unavailable_pick", lang))
+        return
+
+    selected = select_random_control_test_questions(raw_questions, desired_count)
+    questions = prepare_control_test_questions(selected)
+    if not questions:
+        await callback.message.answer(t("control_test_unavailable_pick", lang))
         return
 
     await state.clear()
@@ -1387,17 +1451,16 @@ async def control_test_pick(callback: CallbackQuery, state: FSMContext):
         current_index=0,
         score=0,
         test_source="admin_test",
-        export_source_name=payload.get("title", "control_test"),
+        export_source_name=title,
         export_results_file=False,
         selected_indices=[],
         open_question_indices=[],
     )
 
     await callback.message.answer(
-        t("control_test_starting", lang).format(title=payload.get("title", "")),
+        t("control_test_starting", lang).format(title=title),
         reply_markup=get_cancel_keyboard(lang),
     )
-    await callback.answer()
     await send_next_question(callback.message, state)
 
 @router.message(TmaState.waiting_for_file_quiz, F.text)
@@ -1501,20 +1564,66 @@ async def check_payment_cb(callback: CallbackQuery):
     lang = await get_user_lang(callback.from_user.id)
     await callback.answer()
 
-    pending = await get_pending_payment(callback.from_user.id)
+    pending = await get_pending_payment(callback.from_user.id, payment_type="premium")
     if not pending:
         return await callback.message.answer(t("no_pending", lang))
 
     status = await check_payment(pending["tx_id"])
 
     if status == "paid":
-        await record_payment(callback.from_user.id, pending["tx_id"], pending["amount"])
-        await delete_pending_payment(callback.from_user.id)
+        await record_payment(callback.from_user.id, pending["tx_id"], pending["amount"], payment_type="premium")
+        await delete_pending_payment(callback.from_user.id, payment_type="premium")
         await set_user_premium(callback.from_user.id, 1)
         await callback.message.edit_reply_markup(reply_markup=None)
         await callback.message.answer(t("payment_success", lang))
     elif status == "cancelled":
-        await delete_pending_payment(callback.from_user.id)
+        await delete_pending_payment(callback.from_user.id, payment_type="premium")
+        await callback.message.answer(t("payment_cancelled", lang))
+    elif status == "pending":
+        await callback.message.answer(t("payment_pending", lang))
+    else:
+        await callback.message.answer(t("payment_error", lang))
+
+@router.callback_query(F.data == "buy_narozat")
+async def buy_narozat_handler(callback: CallbackQuery):
+    lang = await get_user_lang(callback.from_user.id)
+    await callback.answer()
+
+    tx = await create_payment(10000, "Narozat test access (30 days)")
+    if not tx:
+        return await callback.message.answer(t("payment_error", lang))
+
+    tx_id = tx.get("tx_id") or tx.get("id")
+    amount = tx.get("amount", 10000)
+    card = tx.get("card") or tx.get("card_number") or tx.get("requisite") or "—"
+    await save_pending_payment(callback.from_user.id, tx_id, amount, payment_type="narozat")
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=t("check_payment_btn", lang), callback_data="check_narozat_payment")]
+    ])
+    await callback.message.answer(
+        t("payment_instructions", lang).format(amount=f"{amount:,}", card=card),
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
+
+@router.callback_query(F.data == "check_narozat_payment")
+async def check_narozat_payment_cb(callback: CallbackQuery):
+    lang = await get_user_lang(callback.from_user.id)
+    await callback.answer()
+
+    pending = await get_pending_payment(callback.from_user.id, payment_type="narozat")
+    if not pending:
+        return await callback.message.answer(t("no_pending", lang))
+
+    status = await check_payment(pending["tx_id"])
+    if status == "paid":
+        await record_payment(callback.from_user.id, pending["tx_id"], pending["amount"], payment_type="narozat")
+        await delete_pending_payment(callback.from_user.id, payment_type="narozat")
+        await callback.message.edit_reply_markup(reply_markup=None)
+        await callback.message.answer(t("narozat_payment_success", lang))
+    elif status == "cancelled":
+        await delete_pending_payment(callback.from_user.id, payment_type="narozat")
         await callback.message.answer(t("payment_cancelled", lang))
     elif status == "pending":
         await callback.message.answer(t("payment_pending", lang))
@@ -1906,3 +2015,10 @@ async def smart_assistant_handler(message: Message, state: FSMContext):
              pass
              
     await message.answer(t("fb_request", lang), reply_markup=get_feedback_keyboard(lang))
+    if not await has_active_narozat_access(callback.from_user.id):
+        await callback.message.answer(
+            t("narozat_required", lang),
+            reply_markup=_narozat_kb(lang),
+        )
+        await callback.answer()
+        return

@@ -15,6 +15,7 @@ from handlers.user_handlers import (
     is_open_question,
     is_multi_answer_question,
     prepare_control_test_questions,
+    select_random_control_test_questions,
     select_control_test_questions,
     send_open_question,
     should_send_quiz_export,
@@ -283,6 +284,17 @@ class QuizUiRuleTests(unittest.TestCase):
         self.assertEqual(len(selected), 10)
         self.assertEqual(sum(1 for q in selected if q.get("question_type") == "open"), 1)
         self.assertGreaterEqual(sum(1 for q in selected if q.get("question_type") != "open" and len(q.get("correct_indices", [])) > 1), 5)
+
+    def test_random_control_test_selection_respects_requested_count(self):
+        questions = [{"question": str(i)} for i in range(40)]
+        selected = select_random_control_test_questions(questions, 25)
+        self.assertEqual(len(selected), 25)
+        self.assertEqual(len({id(item) for item in selected}), 25)
+
+    def test_random_control_test_selection_returns_all_when_short(self):
+        questions = [{"question": str(i)} for i in range(7)]
+        selected = select_random_control_test_questions(questions, 25)
+        self.assertEqual(len(selected), 7)
 
     def test_single_answer_question_has_no_submit_button(self):
         question = {"options": ["A", "B", "C"], "correct_indices": [1]}

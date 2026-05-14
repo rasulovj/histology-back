@@ -91,7 +91,8 @@ async def init_db():
                 user_id TEXT PRIMARY KEY,
                 tx_id TEXT,
                 amount INTEGER,
-                created_at TEXT
+                created_at TEXT,
+                payment_type TEXT DEFAULT 'premium'
             )
         """)
 
@@ -122,9 +123,22 @@ async def init_db():
                 user_id TEXT,
                 tx_id TEXT UNIQUE,
                 amount INTEGER,
-                paid_at TEXT
+                paid_at TEXT,
+                payment_type TEXT DEFAULT 'premium'
             )
         """)
+
+        for col_name, col_type in [
+            ("payment_type", "TEXT DEFAULT 'premium'"),
+        ]:
+            try:
+                await db.execute(f"ALTER TABLE pending_payments ADD COLUMN {col_name} {col_type}")
+            except aiosqlite.OperationalError:
+                pass
+            try:
+                await db.execute(f"ALTER TABLE payment_history ADD COLUMN {col_name} {col_type}")
+            except aiosqlite.OperationalError:
+                pass
 
         # Admin-managed control tests
         await db.execute("""
@@ -419,6 +433,7 @@ async def get_last_topic(user_id):
 
 FREE_DAILY_LIMIT = 3
 PREMIUM_DURATION_DAYS = 30
+NAROZAT_ACCESS_DURATION_DAYS = 30
 
 def _is_premium_active(value) -> bool:
     try:
@@ -448,6 +463,13 @@ def _is_paid_premium_active(paid_at: Optional[str], now: Optional[datetime] = No
         return False
     current = now or datetime.now()
     return paid_dt + timedelta(days=PREMIUM_DURATION_DAYS) > current
+
+def _is_paid_narozat_active(paid_at: Optional[str], now: Optional[datetime] = None) -> bool:
+    paid_dt = _parse_payment_datetime(paid_at)
+    if paid_dt is None:
+        return False
+    current = now or datetime.now()
+    return paid_dt + timedelta(days=NAROZAT_ACCESS_DURATION_DAYS) > current
 
 async def set_user_premium(user_id, level=1):
     today = datetime.now().strftime('%Y-%m-%d')
@@ -494,7 +516,13 @@ async def _is_user_premium_in_db(db_path: str, user_id) -> bool:
         async with aiosqlite.connect(db_path) as db:
             try:
                 async with db.execute(
-                    "SELECT paid_at FROM payment_history WHERE user_id = ? ORDER BY paid_at DESC LIMIT 1",
+                    """
+                    SELECT paid_at
+                    FROM payment_history
+                    WHERE user_id = ? AND COALESCE(payment_type, 'premium') = 'premium'
+                    ORDER BY paid_at DESC
+                    LIMIT 1
+                    """,
                     (uid,)
                 ) as cursor:
                     row = await cursor.fetchone()
@@ -521,7 +549,13 @@ async def get_user_premium_status(user_id):
         stored_value = row[0] if row else 0
 
         async with db.execute(
-            "SELECT paid_at FROM payment_history WHERE user_id = ? ORDER BY paid_at DESC LIMIT 1",
+            """
+            SELECT paid_at
+            FROM payment_history
+            WHERE user_id = ? AND COALESCE(payment_type, 'premium') = 'premium'
+            ORDER BY paid_at DESC
+            LIMIT 1
+            """,
             (uid,)
         ) as cursor:
             latest_payment = await cursor.fetchone()
@@ -555,6 +589,24 @@ async def get_user_premium_status(user_id):
                 return 1
 
         return 0
+
+async def has_active_narozat_access(user_id) -> bool:
+    uid = str(user_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT paid_at
+            FROM payment_history
+            WHERE user_id = ? AND payment_type = 'narozat'
+            ORDER BY paid_at DESC
+            LIMIT 1
+            """,
+            (uid,)
+        ) as cursor:
+            latest_payment = await cursor.fetchone()
+    if not latest_payment:
+        return False
+    return _is_paid_narozat_active(latest_payment[0])
 
 async def check_and_increment_requests(user_id) -> tuple[bool, int]:
     """Returns (allowed, remaining). Increments lifetime counter if allowed."""
@@ -597,36 +649,49 @@ async def check_and_increment_requests(user_id) -> tuple[bool, int]:
         await db.commit()
         return True, FREE_DAILY_LIMIT - new_count
 
-async def save_pending_payment(user_id, tx_id: str, amount: int):
+async def save_pending_payment(user_id, tx_id: str, amount: int, payment_type: str = "premium"):
     date = datetime.now().strftime('%Y-%m-%d %H:%M')
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT OR REPLACE INTO pending_payments (user_id, tx_id, amount, created_at) VALUES (?, ?, ?, ?)",
-            (str(user_id), tx_id, amount, date)
+            """
+            INSERT OR REPLACE INTO pending_payments (user_id, tx_id, amount, created_at, payment_type)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (str(user_id), tx_id, amount, date, payment_type)
         )
         await db.commit()
 
-async def get_pending_payment(user_id):
+async def get_pending_payment(user_id, payment_type: Optional[str] = None):
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-            "SELECT tx_id, amount FROM pending_payments WHERE user_id = ?",
-            (str(user_id),)
-        ) as cursor:
+        query = "SELECT tx_id, amount, COALESCE(payment_type, 'premium') FROM pending_payments WHERE user_id = ?"
+        params: tuple = (str(user_id),)
+        if payment_type:
+            query += " AND COALESCE(payment_type, 'premium') = ?"
+            params = (str(user_id), payment_type)
+        async with db.execute(query, params) as cursor:
             row = await cursor.fetchone()
-            return {"tx_id": row[0], "amount": row[1]} if row else None
+            return {"tx_id": row[0], "amount": row[1], "payment_type": row[2]} if row else None
 
-async def delete_pending_payment(user_id):
+async def delete_pending_payment(user_id, payment_type: Optional[str] = None):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("DELETE FROM pending_payments WHERE user_id = ?", (str(user_id),))
+        query = "DELETE FROM pending_payments WHERE user_id = ?"
+        params: tuple = (str(user_id),)
+        if payment_type:
+            query += " AND COALESCE(payment_type, 'premium') = ?"
+            params = (str(user_id), payment_type)
+        await db.execute(query, params)
         await db.commit()
 
-async def record_payment(user_id, tx_id: str, amount: int):
+async def record_payment(user_id, tx_id: str, amount: int, payment_type: str = "premium"):
     """Permanently record a completed payment to history."""
     paid_at = datetime.now().strftime('%Y-%m-%d %H:%M')
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT OR IGNORE INTO payment_history (user_id, tx_id, amount, paid_at) VALUES (?, ?, ?, ?)",
-            (str(user_id), tx_id, amount, paid_at)
+            """
+            INSERT OR IGNORE INTO payment_history (user_id, tx_id, amount, paid_at, payment_type)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (str(user_id), tx_id, amount, paid_at, payment_type)
         )
         await db.commit()
 
