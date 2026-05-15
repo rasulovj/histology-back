@@ -96,13 +96,23 @@ class PremiumExpiryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(await user_service.has_active_narozat_access(user_id))
 
-    async def test_narozat_free_tries_allow_three_then_block(self):
+    async def test_narozat_uses_shared_free_request_limit(self):
         user_id = "narozat-free-user"
         await self._insert_user(user_id)
 
         self.assertEqual(await user_service.consume_narozat_free_try(user_id), (True, 2))
         self.assertEqual(await user_service.consume_narozat_free_try(user_id), (True, 1))
         self.assertEqual(await user_service.consume_narozat_free_try(user_id), (True, 0))
+        self.assertEqual(await user_service.consume_narozat_free_try(user_id), (False, 0))
+
+    async def test_regular_and_narozat_requests_share_three_free_uses(self):
+        user_id = "shared-free-user"
+        await self._insert_user(user_id)
+
+        self.assertEqual(await user_service.check_and_increment_requests(user_id), (True, 2))
+        self.assertEqual(await user_service.check_and_increment_requests(user_id), (True, 1))
+        self.assertEqual(await user_service.consume_narozat_free_try(user_id), (True, 0))
+        self.assertEqual(await user_service.check_and_increment_requests(user_id), (False, 0))
         self.assertEqual(await user_service.consume_narozat_free_try(user_id), (False, 0))
 
 

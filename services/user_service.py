@@ -435,7 +435,6 @@ async def get_last_topic(user_id):
 FREE_DAILY_LIMIT = 3
 PREMIUM_DURATION_DAYS = 30
 NAROZAT_ACCESS_DURATION_DAYS = 30
-NAROZAT_FREE_TRY_LIMIT = 3
 
 def _is_premium_active(value) -> bool:
     try:
@@ -619,39 +618,7 @@ async def consume_narozat_free_try(user_id) -> tuple[bool, int]:
     if await has_active_narozat_access(uid):
         return True, -1
 
-    today = datetime.now().strftime('%Y-%m-%d')
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-            "SELECT COALESCE(narozat_free_tries, 0) FROM users WHERE user_id = ?",
-            (uid,),
-        ) as cursor:
-            row = await cursor.fetchone()
-
-        if not row:
-            await db.execute(
-                """
-                INSERT INTO users (
-                    user_id, fio, course, year, faculty, lang, activity, is_premium,
-                    registration_date, last_active_date, last_topic, daily_requests, last_request_date, narozat_free_tries
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (uid, "Guest", "1", "2024", "Unknown", "ru", 0, 0, today, today, "", 0, today, 1),
-            )
-            await db.commit()
-            return True, NAROZAT_FREE_TRY_LIMIT - 1
-
-        used = int(row[0] or 0)
-        if used >= NAROZAT_FREE_TRY_LIMIT:
-            return False, 0
-
-        used += 1
-        await db.execute(
-            "UPDATE users SET narozat_free_tries = ? WHERE user_id = ?",
-            (used, uid),
-        )
-        await db.commit()
-        return True, max(0, NAROZAT_FREE_TRY_LIMIT - used)
+    return await check_and_increment_requests(uid)
 
 async def check_and_increment_requests(user_id) -> tuple[bool, int]:
     """Returns (allowed, remaining). Increments lifetime counter if allowed."""
